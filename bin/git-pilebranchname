@@ -14,5 +14,17 @@ if [[ -z "$branch" ]]; then
   exit 1
 fi
 
+raw_branch=$(git show --no-patch --no-show-signature --format=%s "$ref")
+if [[ -z "$raw_branch" ]]; then
+  echo "error: no branch found for ref: $ref" >&2
+  exit 1
+fi
+
+# add check if a branch exists with exactly the commit name, then return its name
+if git show-ref --quiet --verify "refs/heads/$raw_branch"; then
+  echo "$raw_branch"
+  exit 0
+fi
+
 branch_name="${GIT_PILE_PREFIX:-}$(echo "$branch" | tr '[:upper:]' '[:lower:]' | sed -e 's/^\.*//' -e 's/\.lock$/-lock/')"
 echo "$branch_name"
