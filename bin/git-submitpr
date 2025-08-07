@@ -9,6 +9,7 @@ if [[ -n "${GIT_PILE_VERBOSE:-}" ]]; then
 fi
 
 gitlab_mode_enabled=$(git config --default false --type=bool pile.gitlabModeEnabled)
+github_web_mode_enabled=$(git config --default false --type=bool pile.githubWebModeEnabled)
 
 if [[ $gitlab_mode_enabled = true ]]; then
   origin_url=$(git remote get-url origin | sed 's/\.git$//')
@@ -20,6 +21,18 @@ if [[ $gitlab_mode_enabled = true ]]; then
     gitlab_url="https://${BASH_REMATCH[1]}/-/merge_requests/new"
   else
     echo "error: Cannot derive GitLab merge request URL from origin"
+    exit 1
+  fi
+elif [[ $github_web_mode_enabled = true ]]; then
+  origin_url=$(git remote get-url origin | sed 's/\.git$//')
+  ssh_pattern="^git@(git\.)?([^:]+):(.+)$"  # git@github.com:mobile/ios
+  https_pattern="^https:\/\/(.+)$"          # https://github.com/mobile/ios
+  if [[ $origin_url =~ $ssh_pattern ]]; then
+    github_web_url="https://${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/compare/"
+  elif [[ $origin_url =~ $https_pattern ]]; then
+    github_web_url="https://${BASH_REMATCH[1]}/compare/"
+  else
+    echo "error: Cannot derive GitHub merge request URL from origin"
     exit 1
   fi
 else
@@ -135,6 +148,10 @@ gitlab_create_pr() {
   native_open "$gitlab_url?merge_request[source_branch]=$1&merge_request[target_branch]=$2"
 }
 
+github_web_create_pr() {
+  native_open "$github_web_url$2...$1?expand=1"
+}
+
 error_file=$(mktemp)
 if git -C "$worktree_dir" remote get-url mine >/dev/null 2>&1; then
   if git -C "$worktree_dir" push --no-verify $quiet_arg --set-upstream mine "$branch_name"; then
@@ -144,6 +161,8 @@ if git -C "$worktree_dir" remote get-url mine >/dev/null 2>&1; then
     pushd "$worktree_dir" >/dev/null
     if [[ $gitlab_mode_enabled = true ]]; then
       gitlab_create_pr "$branch_name" "$remote_branch_name"
+    elif [[ $github_web_mode_enabled = true ]]; then
+      github_web_create_pr "$branch_name" "$remote_branch_name"
     else
       if url=$(gh pr create --fill --repo "$origin_url" --base "$remote_branch_name" | grep github.com); then
         native_open "$url"
@@ -197,6 +216,8 @@ elif git -C "$worktree_dir" push --no-verify $quiet_arg --set-upstream origin "$
 
   if [[ $gitlab_mode_enabled = true ]]; then
     gitlab_create_pr "$branch_name" "$remote_branch_name"
+  elif [[ $github_web_mode_enabled = true ]]; then
+    github_web_create_pr "$branch_name" "$remote_branch_name"
   else
     if url=$(gh pr create "${body_args[@]}" --base "$remote_branch_name" "${pr_args[@]:---}" | grep github.com); then
       # TODO: should I set subject and body?
