@@ -20,8 +20,8 @@ if [[ -z "$raw_branch" ]]; then
   exit 1
 fi
 
-# add check if a branch exists with exactly the commit name, then return its name
-if git show-ref --quiet --verify "refs/heads/$raw_branch"; then
+# add check if a branch exists with exactly the commit name (case-sensitive), then return its name
+if git for-each-ref --format='%(refname:short)' refs/heads | grep -Fx -- "$raw_branch" >/dev/null; then
   echo "$raw_branch"
   exit 0
 fi
