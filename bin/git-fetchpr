@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+quiet_arg="--quiet"
+if [[ -n "${GIT_PILE_VERBOSE:-}" ]]; then
+  set -x
+  quiet_arg=""
+fi
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: git fetchpr <branch_name> [remote]" >&2
+  exit 1
+fi
+
+branch_name="$1"
+remote="${2:-origin}"
+
+# Detect remote's default branch
+default_branch=""
+default_branch=$(git symbolic-ref "refs/remotes/$remote/HEAD" 2>/dev/null | sed "s|refs/remotes/$remote/||") || true
+if [[ -z "$default_branch" ]]; then
+  if git show-ref --verify --quiet "refs/remotes/$remote/main"; then
+    default_branch="main"
+  elif git show-ref --verify --quiet "refs/remotes/$remote/master"; then
+    default_branch="master"
+  else
+    # Refs might not exist locally yet, try fetching
+    if git fetch $quiet_arg "$remote" main 2>/dev/null; then
+      default_branch="main"
+    elif git fetch $quiet_arg "$remote" master 2>/dev/null; then
+      default_branch="master"
+    else
+      echo "error: could not determine default branch for remote '$remote'" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# Fetch remote's default branch (needed for merge-base)
+if ! git fetch $quiet_arg "$remote" "$default_branch"; then
+  echo "error: failed to fetch default branch '$default_branch' from remote '$remote'" >&2
+  exit 1
+fi
+
+# Fetch the PR branch
+if ! git fetch $quiet_arg "$remote" "$branch_name" 2>/dev/null; then
+  echo "error: branch '$branch_name' not found on remote '$remote'" >&2
+  exit 1
+fi
+
+# Error if local branch already exists
+if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+  echo "error: local branch '$branch_name' already exists" >&2
+  exit 1
+fi
+
+# Find merge-base between remote branch and remote default branch
+merge_base=$(git merge-base "$remote/$branch_name" "$remote/$default_branch")
+
+# Count commits between merge-base and the remote branch
+commit_count=$(git rev-list --count "$merge_base..$remote/$branch_name")
+
+if [[ "$commit_count" -eq 0 ]]; then
+  echo "error: branch '$branch_name' has no commits over '$default_branch'" >&2
+  exit 1
+fi
+
+if [[ "$commit_count" -eq 1 ]]; then
+  # Single commit - use it as-is
+  cherry_pick_sha=$(git rev-parse "$remote/$branch_name")
+else
+  # Multiple commits - squash into one using worktree
+  worktree_dir="$(git pileworktreepath)"
+  if [[ ! -d "$worktree_dir" ]]; then
+    git worktree add --detach --force $quiet_arg "$worktree_dir" "$remote/$branch_name"
+  else
+    git -C "$worktree_dir" switch --detach $quiet_arg "$remote/$branch_name"
+  fi
+
+  _detach_branch() {
+    git -C "$worktree_dir" switch --detach $quiet_arg
+  }
+  trap _detach_branch EXIT
+
+  git -C "$worktree_dir" reset --soft "$merge_base"
+  git -C "$worktree_dir" commit $quiet_arg --no-verify -m "$branch_name"
+  cherry_pick_sha=$(git -C "$worktree_dir" rev-parse HEAD)
+fi
+
+# Create local tracking branch at remote's HEAD (unsquashed, for updatepr compatibility)
+git branch --track=direct "$branch_name" "$remote/$branch_name"
+
+# Cherry-pick the (possibly squashed) commit onto current HEAD
+if ! git cherry-pick "$cherry_pick_sha" >/dev/null; then
+  if git mergetool; then
+    if ! git -c core.editor=true cherry-pick --continue; then
+      git cherry-pick --abort || true
+      git branch -D "$branch_name"
+      echo "error: cherry-pick failed" >&2
+      exit 1
+    fi
+  else
+    git cherry-pick --abort
+    git branch -D "$branch_name"
+    exit 1
+  fi
+fi
