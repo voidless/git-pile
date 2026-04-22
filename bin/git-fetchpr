@@ -66,27 +66,22 @@ if [[ "$commit_count" -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "$commit_count" -eq 1 ]]; then
-  # Single commit - use it as-is
-  cherry_pick_sha=$(git rev-parse "$remote/$branch_name")
+# Squash commits over $default_branch into one using worktree
+worktree_dir="$(git pileworktreepath)"
+if [[ ! -d "$worktree_dir" ]]; then
+  git worktree add --detach --force $quiet_arg "$worktree_dir" "$remote/$branch_name"
 else
-  # Multiple commits - squash into one using worktree
-  worktree_dir="$(git pileworktreepath)"
-  if [[ ! -d "$worktree_dir" ]]; then
-    git worktree add --detach --force $quiet_arg "$worktree_dir" "$remote/$branch_name"
-  else
-    git -C "$worktree_dir" switch --detach $quiet_arg "$remote/$branch_name"
-  fi
-
-  _detach_branch() {
-    git -C "$worktree_dir" switch --detach $quiet_arg
-  }
-  trap _detach_branch EXIT
-
-  git -C "$worktree_dir" reset --soft "$merge_base"
-  git -C "$worktree_dir" commit $quiet_arg --no-verify -m "$branch_name"
-  cherry_pick_sha=$(git -C "$worktree_dir" rev-parse HEAD)
+  git -C "$worktree_dir" switch --detach $quiet_arg "$remote/$branch_name"
 fi
+
+_detach_branch() {
+  git -C "$worktree_dir" switch --detach $quiet_arg
+}
+trap _detach_branch EXIT
+
+git -C "$worktree_dir" reset --soft "$merge_base"
+git -C "$worktree_dir" commit $quiet_arg --no-verify -m "$branch_name"
+cherry_pick_sha=$(git -C "$worktree_dir" rev-parse HEAD)
 
 # Create local tracking branch at remote's HEAD (unsquashed, for updatepr compatibility)
 git branch --track=direct "$branch_name" "$remote/$branch_name"
